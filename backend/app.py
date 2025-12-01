@@ -14,9 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 import mercantile
 from rasterio.warp import reproject, Resampling, transform_bounds
-from rasterio.transform import Affine
+from rasterio.transform import from_bounds
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 # ---------------------------
 # Config
@@ -95,21 +96,20 @@ def get_var_and_coords(ds: xr.Dataset) -> Tuple[np.ndarray, np.ndarray, np.ndarr
     return data, lats, lons
 
 def render_tile_from_grid(data: np.ndarray, lats: np.ndarray, lons: np.ndarray, z: int, x: int, y: int, tile_size=256) -> bytes:
+    # Get tile bounds in lat/lon
     tile = mercantile.Tile(x=x, y=y, z=z)
-    w, s, e, n = mercantile.bounds(tile)
+    west, south, east, north = mercantile.bounds(tile)
 
-    # create transform for source grid
-    ny, nx = data.shape
-    lon0, lon1 = lons[0,0], lons[0,-1]
-    lat0, lat1 = lats[0,0], lats[-1,0]
-    resx = (lon1 - lon0) / max(nx-1, 1)
-    resy = (lat1 - lat0) / max(ny-1, 1)
-    src_transform = Affine.translation(lon0 - resx/2, lat0 - resy/2) * Affine.scale(resx, resy)
+    # Source bounds
+    lat_min, lat_max = lats.min(), lats.max()
+    lon_min, lon_max = lons.min(), lons.max()
 
-    # destination tile bounds in WebMercator
-    wm_w, wm_s, wm_e, wm_n = transform_bounds("EPSG:4326", "EPSG:3857", w, s, e, n, densify_pts=21)
-    dst_transform = Affine((wm_e - wm_w) / tile_size, 0, wm_w, 0, -(wm_n - wm_s) / tile_size, wm_n)
+    # Destination array
     dst = np.full((tile_size, tile_size), np.nan, dtype=np.float32)
+
+    # Reproject from lat/lon to WebMercator
+    src_transform = from_bounds(lon_min, lat_min, lon_max, lat_max, data.shape[1], data.shape[0])
+    dst_transform = from_bounds(west, south, east, north, tile_size, tile_size)
 
     reproject(
         source=data,
@@ -117,19 +117,25 @@ def render_tile_from_grid(data: np.ndarray, lats: np.ndarray, lons: np.ndarray, 
         src_transform=src_transform,
         src_crs="EPSG:4326",
         dst_transform=dst_transform,
-        dst_crs="EPSG:3857",
+        dst_crs="EPSG:4326",  # keep in lat/lon for Leaflet overlay
         resampling=Resampling.bilinear,
         num_threads=2,
     )
 
-    # Map reflectivity to RGBA using colormap
-    cmap = plt.get_cmap("turbo")
+    # Map reflectivity to RGBA
+    colors = [
+        "#000000", "#00FFFF", "#0000FF", "#00FF00", "#FFFF00",
+        "#FFA500", "#FF0000", "#800000"
+    ]
+    bounds = [0, 5, 10, 20, 30, 40, 50, 60, 70]
+    cmap = mcolors.ListedColormap(colors)
+    norm = mcolors.BoundaryNorm(bounds, cmap.N)
+
     nan_mask = np.isnan(dst)
-    vmin, vmax = -10.0, 75.0
-    normed = (np.clip(dst, vmin, vmax) - vmin) / (vmax - vmin)
-    rgba = cmap(normed)
+    rgba = cmap(norm(np.nan_to_num(dst, nan=0)))
     rgba[nan_mask, :] = (0,0,0,0)
     img = (rgba * 255).astype(np.uint8)
+
     pil = Image.fromarray(img, mode="RGBA")
     buf = io.BytesIO()
     pil.save(buf, format="PNG")
@@ -147,4 +153,5 @@ async def tile(z: int, x: int, y: int):
         png = render_tile_from_grid(data, lats, lons, z, x, y)
         return Response(content=png, media_type="image/png")
     except Exception as e:
+        print("Tile error:", e)
         raise HTTPException(status_code=502, detail=str(e))
