@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+aiohttp
+numpy
+xarray
+cfgrib
+pillow
+mercantile
+rasterio
+matplotlib
