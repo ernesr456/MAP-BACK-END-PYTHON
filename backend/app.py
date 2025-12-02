@@ -37,14 +37,18 @@ dataset_cache = {"ts": 0, "ds": None}
 # ---------------------------
 app = FastAPI(title="MRMS RALA Tile Server")
 
-# Allow CORS for frontend
+# Correct CORS for Vercel frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # adjust for production
+    allow_origins=[
+        "https://map-front-end-nextjs.vercel.app",
+        "http://localhost:3000",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ---------------------------
 # Helper functions
 # ---------------------------
